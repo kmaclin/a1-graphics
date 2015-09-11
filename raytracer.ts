@@ -53,12 +53,19 @@ class Camera {
     public forward: Vector;
     public right: Vector;
     public up: Vector;
+    public vsize: number;
+    public hsize: number;
+    public dist: number;
 
-    constructor(public pos: Vector, lookAt: Vector) {
+    constructor(public pos: Vector, lookAt: Vector, distance: number, hsize: number, vsize: number) {
         var down = new Vector(0.0, -1.0, 0.0);
+        this.dist = distance;
+        this.vsize = vsize;
+        this.hsize = hsize;
+        var ratio = hsize/vsize;
         this.forward = Vector.norm(Vector.minus(lookAt, this.pos));
-        this.right = Vector.times(1.5, Vector.norm(Vector.cross(this.forward, down)));
-        this.up = Vector.times(1.5, Vector.norm(Vector.cross(this.forward, this.right)));
+        this.right = Vector.times(hsize, Vector.norm(Vector.cross(this.forward, down)));
+        this.up = Vector.times(vsize, Vector.norm(Vector.cross(this.forward, this.right)));
     }
 }
 
@@ -81,8 +88,8 @@ interface Surface {
 }
 
 interface Thing {
-    intersect: (ray: Ray) => Intersection;
-    normal: (pos: Vector) => Vector;
+    intersect: (ray: Ray, time: number) => Intersection;
+    normal: (pos: Vector, time: number) => Vector;
     surface: Surface;
 }
 
@@ -97,15 +104,18 @@ interface Scene {
     camera: Camera;
 }
 
+
 class Sphere implements Thing {
     public radius2: number;
 
     constructor(public center: Vector, radius: number, public surface: Surface) {
         this.radius2 = radius * radius;
+
     }
-    normal(pos: Vector): Vector { return Vector.norm(Vector.minus(pos, this.center)); }
-    intersect(ray: Ray) {
-        var eo = Vector.minus(this.center, ray.start);
+    normal(pos: Vector, time: number): Vector { return Vector.norm(Vector.minus(pos, this.getCenter(time))); }
+    intersect(ray: Ray, time: number) {
+        
+        var eo = Vector.minus(this.getCenter(time), ray.start);
         var v = Vector.dot(eo, ray.dir);
         var dist = 0;
         if (v >= 0) {
@@ -120,11 +130,54 @@ class Sphere implements Thing {
             return { thing: this, ray: ray, dist: dist };
         }
     }
+    getCenter(time: number): Vector {
+        return this.center;
+    }
+
+}
+
+class MovingSphere extends Sphere {
+    public radius2: number;
+
+    constructor(public center: Vector, radius: number, public surface: Surface) {
+        super(center, radius, surface);
+    }
+    
+    normal(pos: Vector, time: number): Vector { return Vector.norm(Vector.minus(pos, this.getCenter(time))); }
+    intersect(ray: Ray, time: number) {
+
+        var eo = Vector.minus(this.getCenter(time), ray.start);
+        var v = Vector.dot(eo, ray.dir);
+        var dist = 0;
+        if (v >= 0) {
+            var disc = this.radius2 - (Vector.dot(eo, eo) - v * v);
+            if (disc >= 0) {
+                dist = v - Math.sqrt(disc);
+            }
+        }
+        if (dist === 0) {
+            return null;
+        } else {
+            return { thing: this, ray: ray, dist: dist };
+        }
+    }
+    
+    getCenter(time: number): Vector {
+        var sphere_center = new Vector(0.0, 1.0, -0.25);
+        sphere_center.x = sphere_center.x + Math.sin(0)/2;
+        var angle = (2 * Math.PI) * time;
+        
+        var sin = Math.sin(angle);
+        sin = Math.pow(sin, 3);
+        sphere_center.x = sphere_center.x + sin * 2;
+        
+        return sphere_center;
+    }
 }
 
 class Plane implements Thing {
     public normal: (pos: Vector) =>Vector;
-    public intersect: (ray: Ray) =>Intersection;
+    public intersect: (ray: Ray, time: number) =>Intersection;
     constructor(norm: Vector, offset: number, public surface: Surface) {
         this.normal = function(pos: Vector) { return norm; }
         this.intersect = function(ray: Ray): Intersection {
@@ -170,11 +223,11 @@ module Surfaces {
 class RayTracer {
     private maxDepth = 5;
 
-    private intersections(ray: Ray, scene: Scene) {
+    private intersections(ray: Ray, scene: Scene, time: number) {
         var closest = +Infinity;
         var closestInter: Intersection = undefined;
         for (var i in scene.things) {
-            var inter = scene.things[i].intersect(ray);
+            var inter = scene.things[i].intersect(ray, time);
             if (inter != null && inter.dist < closest) {
                 closestInter = inter;
                 closest = inter.dist;
@@ -183,8 +236,8 @@ class RayTracer {
         return closestInter;
     }
 
-    private testRay(ray: Ray, scene: Scene) {
-        var isect = this.intersections(ray, scene);
+    private testRay(ray: Ray, scene: Scene, time: number) {
+        var isect = this.intersections(ray, scene, time);
         if (isect != null) {
             return isect.dist;
         } else {
@@ -192,35 +245,37 @@ class RayTracer {
         }
     }
 
-    private traceRay(ray: Ray, scene: Scene, depth: number): Color {
-        var isect = this.intersections(ray, scene);
+    private traceRay(ray: Ray, scene: Scene, depth: number, time: number): Color {
+        var isect = this.intersections(ray, scene, time);
         if (isect === undefined) {
             return Color.background;
         } else {
-            return this.shade(isect, scene, depth);
+            return this.shade(isect, scene, depth, time);
         }
     }
 
-    private shade(isect: Intersection, scene: Scene, depth: number) {
+    private shade(isect: Intersection, scene: Scene, depth: number, time: number) {
+
         var d = isect.ray.dir;
         var pos = Vector.plus(Vector.times(isect.dist, d), isect.ray.start);
-        var normal = isect.thing.normal(pos);
+        var normal = isect.thing.normal(pos, time);
         var reflectDir = Vector.minus(d, Vector.times(2, Vector.times(Vector.dot(normal, d), normal)));
         var naturalColor = Color.plus(Color.background,
-                                      this.getNaturalColor(isect.thing, pos, normal, reflectDir, scene));
-        var reflectedColor = (depth >= this.maxDepth) ? Color.grey : this.getReflectionColor(isect.thing, pos, normal, reflectDir, scene, depth);
+                                      this.getNaturalColor(isect.thing, pos, normal, reflectDir, scene, time));
+        var reflectedColor = (depth >= this.maxDepth) ? Color.grey : this.getReflectionColor(isect.thing, pos, normal, reflectDir, scene, depth, time);
         return Color.plus(naturalColor, reflectedColor);
     }
 
-    private getReflectionColor(thing: Thing, pos: Vector, normal: Vector, rd: Vector, scene: Scene, depth: number) {
-        return Color.scale(thing.surface.reflect(pos), this.traceRay({ start: pos, dir: rd }, scene, depth + 1));
+    private getReflectionColor(thing: Thing, pos: Vector, normal: Vector, rd: Vector, scene: Scene, depth: number, time: number) {
+        return Color.scale(thing.surface.reflect(pos), this.traceRay({ start: pos, dir: rd }, scene, depth + 1, time));
     }
 
-    private getNaturalColor(thing: Thing, pos: Vector, norm: Vector, rd: Vector, scene: Scene) {
+    private getNaturalColor(thing: Thing, pos: Vector, norm: Vector, rd: Vector, scene: Scene, time: number) {
+
         var addLight = (col, light) => {
             var ldis = Vector.minus(light.pos, pos);
             var livec = Vector.norm(ldis);
-            var neatIsect = this.testRay({ start: pos, dir: livec }, scene);
+            var neatIsect = this.testRay({ start: pos, dir: livec }, scene, time);
             var isInShadow = (neatIsect === undefined) ? false : (neatIsect <= Vector.mag(ldis));
             if (isInShadow) {
                 return col;
@@ -247,13 +302,14 @@ class RayTracer {
     //    of the canvas
     // 3. it takes in a Whammy.Video object and some parameters to render a movie from a sequence
     //    of frames
-    render(scene, encoder: Whammy.Video, length: number, fps: number,
+    render(scene, encoder: Whammy.Video, length: number, fps: number, grid: number,
                 ctx : CanvasRenderingContext2D, 
                 screenWidth, screenHeight, canvasWidth, canvasHeight) {
         var getPoint = (x, y, camera) => {
-            var recenterX = x =>(x - (screenWidth / 2.0)) / 2.0 / screenWidth;
+
+            var recenterX = x => (x - (screenWidth / 2.0)) / 2.0 / screenWidth;
             var recenterY = y => - (y - (screenHeight / 2.0)) / 2.0 / screenHeight;
-            return Vector.norm(Vector.plus(camera.forward, Vector.plus(Vector.times(recenterX(x), camera.right), Vector.times(recenterY(y), camera.up))));
+            return Vector.norm(Vector.plus(Vector.times(-camera.dist, camera.forward), Vector.plus(Vector.times(recenterX(x), camera.right), Vector.times(recenterY(y), camera.up))));
         }
         // rather than doing a for loop for y, we're going to draw each line in
         // an animationRequestFrame callback, so we see them update 1 by 1
@@ -263,20 +319,33 @@ class RayTracer {
  
         // how many frames       
         var frame = length * fps;
+        var fcounter = 0;
+        var time = 0;
         
         // <<< Beginning: THIS WILL GO AWAY in your solution, when you add motion blur
         // we're going to move the sphere around
-        var sphere = <Sphere>scene.things[1];
+        //var sphere = <Sphere>scene.things[1];
         // easy way to get a copy of the center
-        var sphereCenter = Vector.times(1.0, sphere.center);
+        //var sphereCenter = Vector.times(1.0, sphere.center);
         
-        sphere.center.x = sphereCenter.x + Math.sin(0)/2;
+        //sphere.center.x = sphereCenter.x + Math.sin(0)/2;
         //sphere.center.z = sphereCenter.z + Math.cos(0)/2;
         // End >>>>: THIS WILL GO AWAY in your solution, when you add motion blur
 
         var renderRow = () => {
+            time = fcounter/(fps*length);
             for (var x = 0; x < screenWidth; x++) {
-                var color = this.traceRay({ start: scene.camera.pos, dir: getPoint(x, y, scene.camera) }, scene, 0);
+                var color = new Color(0, 0, 0);
+
+                for (var p = 0; p < grid; p++) {
+                    for (var q = 0; q < grid; q++) {
+                        var newColor = this.traceRay({ start: scene.camera.pos, dir: getPoint(x + ((p + Math.random())/grid), y + ((q + Math.random())/grid), scene.camera) }, scene, 0, time + (Math.random()*(1/(fps*length))));
+
+                       // var color = this.traceRay({ start: scene.camera.pos, dir: getPoint(x, y, scene.camera) }, scene, 0, time + (Math.random()*(1/(fps*length))));
+                        color = Color.plus(color, newColor);
+                    }
+                 }
+                color = Color.scale((1/(grid*grid)), color);
                 var c = Color.toDrawingColor(color);
                 ctx.fillStyle = "rgb(" + String(c.r) + ", " + String(c.g) + ", " + String(c.b) + ")";
                 ctx.fillRect(x * pixelWidth, y * pixelHeight, pixelWidth, pixelHeight);
@@ -286,6 +355,7 @@ class RayTracer {
             y++;
             if (y < screenHeight) {
                 // finished a line, do another
+                
                 requestAnimationFrame(renderRow);            
             } else {
                 // finished current frame, let see if we have more to render
@@ -296,13 +366,17 @@ class RayTracer {
                     // increment frame, restart the line counter
                     y = 0;
                     frame--;
+                    
+                    
+                    fcounter++;
+                    
 
                     // <<< Beginning: THIS WILL GO AWAY in your solution, when you add motion blur
                     // animate the sphere with a sin function
-                    var angle = (((2 * Math.PI) / length) / fps) * (fps * length - frame); 
-                    var sin = Math.sin(angle);
-                    sin = Math.pow(sin, 3);
-                    sphere.center.x = sphereCenter.x + sin * 2;
+                    //var angle = (((2 * Math.PI) / length) / fps) * (fps * length - frame); 
+                   // var sin = Math.sin(angle);
+                  //  sin = Math.pow(sin, 3);
+                    //sphere.center.x = sphereCenter.x + sin * 2;
                     // End >>>>: THIS WILL GO AWAY in your solution, when you add motion blur
                     
                     // start the next frame         
@@ -327,19 +401,21 @@ class RayTracer {
 function defaultScene(): Scene {
     return {
         things: [new Plane(new Vector(0.0, 1.0, 0.0), 0.0, Surfaces.checkerboard),
-                 new Sphere(new Vector(0.0, 1.0, -0.25), 1.0, Surfaces.shiny),
-                 new Sphere(new Vector(-1.0, 0.5, 1.5), 0.5, Surfaces.shiny)],
+                 new MovingSphere(new Vector(0.0, 1.0, -0.25), 1.0, Surfaces.shiny),
+                 new Sphere(new Vector(-1.0, 0.5, 1.5), 0.5, Surfaces.shiny),
+                 new Sphere(new Vector(-0.5, 0.4, 2.5), 0.4, Surfaces.shiny)],
         lights: [{ pos: new Vector(-2.0, 2.5, 0.0), color: new Color(0.49, 0.07, 0.07) },
-                 { pos: new Vector(1.5, 2.5, 1.5), color: new Color(0.07, 0.07, 0.49) },
+                 { pos: new Vector(1.5, 2.5, 1.5), color: new Color(0.00, 0.34, 0.00) },
                  { pos: new Vector(1.5, 2.5, -1.5), color: new Color(0.07, 0.49, 0.071) },
-                 { pos: new Vector(0.0, 3.5, 0.0), color: new Color(0.21, 0.21, 0.35) }],
-        camera: new Camera(new Vector(3.0, 2.0, 4.0), new Vector(-1.0, 0.5, 0.0))
+                 { pos: new Vector(-1.5, 3.0, 0.0), color: new Color(0.47, 0.15, 0.04)},
+                 { pos: new Vector(-1.0, 3.5, 0.0), color: new Color(0.21, 0.21, 0.35) }],
+        camera: new Camera(new Vector(5.0, 4.0, 3.0), new Vector(-2.0, 0.5, 0.0), -2.0, 4, 3) //-1.0,0.5,0.0
     };
 }
 
 function exec() {
     var canv = document.createElement("canvas");
-    canv.width = 480;
+    canv.width = 640;
     canv.height = 480;
     document.body.appendChild(canv);
     var ctx = canv.getContext("2d");
@@ -351,7 +427,7 @@ function exec() {
     var encoder = new Whammy.Video(fps);
     
     // start the raytracer
-    rayTracer.render(defaultScene(), encoder, length, fps, ctx, 480, 480, 480, 480);
+    rayTracer.render(defaultScene(), encoder, length, fps, 4, ctx, 640, 480, 640, 480);
 }
 
 exec();
